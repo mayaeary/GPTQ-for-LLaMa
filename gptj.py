@@ -156,6 +156,11 @@ def load_quant(model, checkpoint, wbits):
 
     return model
 
+def get_tokenizer(model):
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model)
+    return tokenizer
 
 if __name__ == '__main__':
     import argparse
@@ -166,6 +171,10 @@ if __name__ == '__main__':
     parser.add_argument(
         'model', type=str,
         help='GPT-J model to load.'
+    )
+    parser.add_argument(
+        'dataset', type=str, choices=['wikitext2', 'ptb', 'c4'],
+        help='Where to extract calibration data from.'
     )
     parser.add_argument(
         '--seed',
@@ -203,6 +212,10 @@ if __name__ == '__main__':
     
     model = get_gptj(args.model)
     model.eval()
+
+    dataloader, testloader = get_loaders(
+        args.dataset, nsamples=args.nsamples, seed=args.seed, model=args.model, seqlen=model.seqlen
+    )
 
     tick = time.time()
     quantizers = gptj_sequential(model, dataloader, DEV)
