@@ -16,7 +16,7 @@ def get_gptj(model):
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
     from transformers import GPTJForCausalLM
-    model = GPTJForCausalLM.from_pretrained(model, torch_dtype='auto')
+    model = GPTJForCausalLM.from_pretrained(model, torch_dtype='auto', low_cpu_mem_usage=True)
     model.seqlen = model.config.max_position_embeddings
     return model
 
@@ -29,22 +29,24 @@ def gptj_sequential(model, dataloader, dev):
     layers = model.transformer.h
 
     model.transformer.wte = model.transformer.wte.to(dev)
+    model.transformer.ln_f = model.transformer.ln_f.to(dev)
     layers[0] = layers[0].to(dev)
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
         (args.nsamples, model.seqlen, model.config.hidden_size), dtype=dtype, device=dev
     )
-    cache = {'i': 0, 'attention_mask': None}
+    cache = {'i': 0, 'attention_mask': None, 'position_ids': None}
 
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
             self.module = module
-        def forward(self, inp, **kwargs):
-            inps[cache['i']] = inp
+        def forward(self, hidden_states, **kwargs):
+            inps[cache['i']] = hidden_states
             cache['i'] += 1
             cache['attention_mask'] = kwargs['attention_mask']
+            cache['position_ids'] = kwargs['position_ids']
             raise ValueError
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
@@ -62,6 +64,7 @@ def gptj_sequential(model, dataloader, dev):
 
     outs = torch.zeros_like(inps)
     attention_mask = cache['attention_mask']
+    position_ids = cache['position_ids']
 
     print('Ready.')
 
@@ -86,18 +89,18 @@ def gptj_sequential(model, dataloader, dev):
         for name in subset:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
         for h in handles:
             h.remove()
 
         for name in subset:
             print(i, name)
             print('Quantizing ...')
-            gptq[name].fasterquant(percdamp=args.percdamp, groupsize=args.groupsize)
-            quantizers['model.transformer.h.%d.%s' % (i, name)] = gptq[name].quantizer
+            gptq[name].fasterquant(percdamp=args.percdamp)
+            quantizers['transformer.h.%d.%s' % (i, name)] = gptq[name].quantizer
             gptq[name].free()
         for j in range(args.nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask, position_ids=position_ids)[0]
 
         layers[i] = layer.cpu()
         del layer
@@ -119,9 +122,9 @@ def gptj_pack(model, quantizers, wbits):
     print('Packing ...')
     for name in qlayers:
         print(name)
-        quantizers[name],scale,zero = quantizers[name]
-        qlayers[name].pack(layers[name], scale, zero)
-    print('Done!')
+        quantizers[name] = quantizers[name].cpu()
+        qlayers[name].pack(layers[name], quantizers[name].scale, quantizers[name].zero)
+    print('Done.')
     return model
 
 def load_quant(model, checkpoint, wbits):
@@ -133,7 +136,6 @@ def load_quant(model, checkpoint, wbits):
     torch.nn.init.uniform_ = noop
     torch.nn.init.normal_ = noop
 
-    torch.set_default_dtype(torch.half)
     transformers.modeling_utils._init_weights = False
     torch.set_default_dtype(torch.half)
     model = GPTJForCausalLM(config)
