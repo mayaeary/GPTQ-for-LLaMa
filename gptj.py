@@ -26,7 +26,7 @@ def gptj_sequential(model, dataloader, dev):
 
     use_cache = model.config.use_cache
     model.config.use_cache = False
-    layers = model.model.decoder.layers
+    layers = model.transformer.h
 
     model.transformer.wte = model.transformer.wte.to(dev)
     layers[0] = layers[0].to(dev)
@@ -77,7 +77,7 @@ def gptj_sequential(model, dataloader, dev):
             gptq[name].quantizer.configure(
                 args.wbits, perchannel=True, sym=False, mse=False
             )
-
+        
         def add_batch(name):
             def tmp(_, inp, out):
                 gptq[name].add_batch(inp[0].data, out.data)
@@ -94,20 +94,20 @@ def gptj_sequential(model, dataloader, dev):
             print(i, name)
             print('Quantizing ...')
             gptq[name].fasterquant(percdamp=args.percdamp, groupsize=args.groupsize)
-            quantizers['model.decoder.layers.%d.%s' % (i, name)] = gptq[name].quantizer
+            quantizers['model.transformer.h.%d.%s' % (i, name)] = gptq[name].quantizer
             gptq[name].free()
         for j in range(args.nsamples):
             outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
 
         layers[i] = layer.cpu()
         del layer
-        del gptq 
+        del gptq
         torch.cuda.empty_cache()
 
         inps, outs = outs, inps
 
     model.config.use_cache = use_cache
-    
+
     return quantizers
 
 
