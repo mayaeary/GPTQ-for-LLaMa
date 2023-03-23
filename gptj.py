@@ -206,9 +206,6 @@ if __name__ == '__main__':
     )
 
     args = parser.parse_args()
-
-    if type(args.load) is not str:
-        args.load = args.load.as_posix()
     
     model = get_gptj(args.model)
     model.eval()
